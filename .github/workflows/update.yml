@@ -4,15 +4,20 @@ name: Update Taiwan stock snapshot
 on:
   workflow_dispatch:
   schedule:
+    # 台灣時間週一至週五 17:30
     - cron: '30 9 * * 1-5'
 
 permissions:
   contents: write
 
+concurrency:
+  group: stock-update
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 115
 
     steps:
       - uses: actions/checkout@v4
@@ -22,18 +27,16 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
-      - name: Update stock data
-        run: python update_data.py
+      - run: python update_data.py
 
       - name: Commit snapshot
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/
+          git add data/snapshot.csv.gz data/history.csv.gz data/metadata.json
           if ! git diff --cached --quiet; then
-            git commit -m "Update stock snapshot"
+            git commit -m "chore: refresh stock screener snapshot"
             git push
           fi
