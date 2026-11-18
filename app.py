@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
-st.set_page_config(page_title='TW Terminal V7.3 | 台股選股', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
+st.set_page_config(page_title='TW Terminal V7.3.1 | 台股選股', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
 st.markdown('''<style>
 :root {color-scheme:dark}
 html,body,[data-testid="stAppViewContainer"],.stApp {background:#080e17;color:#dce7f3}
@@ -55,7 +55,7 @@ meta_path=ROOT/'data'/'metadata.json'
 try: meta=json.loads(meta_path.read_text(encoding='utf-8')) if meta_path.exists() else {}
 except (ValueError,OSError): meta={}
 
-st.markdown('<div class="terminal-title">▥ TW TERMINAL <span class="tag">/ V7.3</span>　<span class="terminal-sub">台股全市場選股 · 專業交易工作台</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="terminal-title">▥ TW TERMINAL <span class="tag">/ V7.3.1</span>　<span class="terminal-sub">台股全市場選股 · 專業交易工作台</span></div>',unsafe_allow_html=True)
 if df.empty:
     st.warning('目前沒有 data/snapshot.csv.gz。請先在 GitHub → Actions 執行 Update Taiwan stock snapshot，確認 data 資料夾產生後重新整理。')
     st.stop()
@@ -119,6 +119,41 @@ with screen:
         fig.update_layout(height=230,margin=dict(l=8,r=8,t=10,b=12),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',font_color='#b8cadc',showlegend=False,yaxis_title=None)
         st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':False})
         st.caption(f'技術資料日：{item.get("technical_day","未知")}。此圖比較指標快照，並非歷史 K 線。')
+        st.markdown('<div class="panel-label">◈ SWING ANALYSIS / 波段交易分析</div>',unsafe_allow_html=True)
+        hpath_panel=ROOT/'data'/'history.csv.gz'
+        if hpath_panel.exists():
+            @st.cache_data(ttl=300,show_spinner=False)
+            def swing_bars(sym,mtime):
+                h=pd.read_csv(hpath_panel,dtype={'symbol':str})
+                d=h.loc[h.symbol==sym].copy()
+                if d.empty:return d
+                d['date']=pd.to_datetime(d.date,errors='coerce')
+                for c in ('open','high','low','close','volume'):d[c]=pd.to_numeric(d[c],errors='coerce')
+                d=d.dropna(subset=['date','close']).sort_values('date')
+                d=d.loc[d.date>=d.date.max()-pd.DateOffset(years=1)]
+                d['ma20']=d.close.rolling(20,min_periods=20).mean()
+                d['ma60']=d.close.rolling(60,min_periods=60).mean()
+                d['res20']=d.high.shift(1).rolling(20,min_periods=20).max()
+                d['sup20']=d.low.shift(1).rolling(20,min_periods=20).min()
+                d['res60']=d.high.shift(1).rolling(60,min_periods=60).max()
+                d['sup60']=d.low.shift(1).rolling(60,min_periods=60).min()
+                d['vr']=d.volume/d.volume.shift(1).rolling(20,min_periods=20).mean().replace(0,np.nan)
+                return d
+            sd=swing_bars(str(selected),hpath_panel.stat().st_mtime)
+            if not sd.empty:
+                last=sd.iloc[-1]
+                def fmt(v):return f'{v:,.2f}' if pd.notna(v) else '資料不足'
+                trend='多頭排列' if pd.notna(last.ma60) and last.close>last.ma20>last.ma60 else ('偏弱 / 盤整' if pd.notna(last.ma60) else '資料不足')
+                st.markdown(f'**趨勢：{trend}**　｜　歷史日：{last.date:%Y-%m-%d}')
+                a,b=st.columns(2)
+                a.metric('20 日壓力',fmt(last.res20));b.metric('20 日支撐',fmt(last.sup20))
+                a.metric('60 日壓力',fmt(last.res60));b.metric('60 日支撐',fmt(last.sup60))
+                a.metric('成交量比',f'{last.vr:.2f}×' if pd.notna(last.vr) else '資料不足')
+                b.metric('MA60',fmt(last.ma60))
+                st.caption('支撐壓力採前 N 個完整交易日高低點；量比使用前 20 日均量。此區為觀察資訊，非交易訊號。')
+            else:st.info('此股票尚無歷史行情。')
+        else:st.info('尚未下載歷史行情，無法計算支撐壓力。')
+
 
 
 @st.cache_data(ttl=300,show_spinner=False)
@@ -185,8 +220,9 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
     d=compute_indicators(prepare_bars(rows,timeframe))
     d=d.tail(count).copy()
     panes=['K']+(['成交量'] if show_volume else [])+(['RSI'] if show_rsi else [])+(['MACD'] if show_macd else [])
-    heights=[.55]+[.15]*(len(panes)-1)
-    total=sum(heights);heights=[v/total for v in heights]
+    # Dynamically redistribute space when any indicator panel is hidden.
+    weights=[5.5]+[1.5]*(len(panes)-1)
+    total=sum(weights);heights=[v/total for v in weights]
     fig=make_subplots(rows=len(panes),cols=1,shared_xaxes=True,vertical_spacing=.025,row_heights=heights)
     x=d.date.dt.strftime('%Y-%m-%d')
     fig.add_trace(go.Candlestick(x=x,open=d.open,high=d.high,low=d.low,close=d.close,
@@ -200,7 +236,12 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
             for field,dash in [('resistance','dash'),('support','dot')]:
                 col=f'{field}{n}'
                 if d[col].notna().any():
-                    fig.add_trace(go.Scatter(x=x,y=d[col],name=f'{n}期{field}',mode='lines',line=dict(color=color,width=1,dash=dash)),row=1,col=1)
+                    fig.add_trace(go.Scatter(x=x,y=d[col],name=f'{n}日{"壓力" if field=="resistance" else "支撐"}',mode='lines',
+                        line=dict(color=color,width=1.4,dash=dash),opacity=.85,hovertemplate='%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>'),row=1,col=1)
+                    last=d[col].dropna().iloc[-1]
+                    fig.add_annotation(x=1.005,y=float(last),xref='paper',yref='y',text=f'{"R" if field=="resistance" else "S"}{n} {last:,.2f}',
+                        xanchor='left',showarrow=False,font=dict(color=color,size=10),bgcolor='#101a28',bordercolor=color,borderwidth=.5)
+
     row=2
     if show_volume:
         fig.add_trace(go.Bar(x=x,y=d.volume,name='成交量',marker_color='#5b91bb'),row=row,col=1)
@@ -219,7 +260,7 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
         fig.add_trace(go.Scatter(x=x,y=d.dif,name='DIF',line=dict(color='#2bc7a2',width=1.4)),row=row,col=1)
         fig.add_trace(go.Scatter(x=x,y=d.signal,name='Signal',line=dict(color='#f6c15e',width=1.4)),row=row,col=1)
     fig.update_layout(title=dict(text=title,font=dict(size=14)),height=950 if expanded else 790,
-        margin=dict(l=12,r=15,t=55,b=28),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',
+        margin=dict(l=12,r=112 if show_levels else 15,t=55,b=28),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',
         font=dict(color='#b8cadc',size=10),xaxis_rangeslider_visible=False,showlegend=True,
         legend=dict(orientation='h',y=1.03,x=0),dragmode='pan',hovermode='x unified',
         uirevision=f'{title}_{timeframe}_{count}_{expanded}')
@@ -228,7 +269,7 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
     return fig
 
 with charts:
-    st.markdown('<div class="panel-label">▤ SWING TERMINAL / V7.3 波段交易工作台 · 非即時行情</div>',unsafe_allow_html=True)
+    if not st.session_state.get('v731_focus_mode',False):st.markdown('<div class="panel-label">▤ SWING TERMINAL / V7.3.1 波段交易工作台 · 非即時行情</div>',unsafe_allow_html=True)
     hpath=ROOT/'data'/'history.csv.gz'
     history=load_history(hpath.stat().st_mtime if hpath.exists() else 0)
     if history.empty:
@@ -244,44 +285,57 @@ with charts:
         if 'v7_screen_override' not in st.session_state:st.session_state.v7_screen_override=[]
         if 'v7_mode' not in st.session_state:st.session_state.v7_mode='條件選股'
         if 'v7_layout' not in st.session_state:st.session_state.v7_layout='聚焦主圖'
-        c1,c2,c3=st.columns([2,2,1.2],gap='small')
-        with c1:mode=st.radio('股票來源',['條件選股','我的自選股'],horizontal=True,key='v7_mode')
-        with c2:layout=st.radio('顯示方式',['聚焦主圖','六宮格','放大分析'],horizontal=True,key='v7_layout')
-        with c3:days=st.selectbox('顯示交易日數',[22,66,90,125,250],index=2,key='v7_days')
-        settings1,settings2=st.columns([1,2])
-        with settings1:
-            timeframe=st.radio('K 線週期',['日 K','週 K'],horizontal=True,key='v73_timeframe')
-            search_symbol=st.text_input('快速搜尋股票代碼',placeholder='輸入 2330 後按 Enter',key='v73_search')
-        with settings2:
-            st.caption('圖表顯示開關（放大分析與聚焦主圖）')
-            ma_periods=st.multiselect('均線 MA',[5,10,20,60],default=[20],key='v73_ma')
-            flag_cols=st.columns(5)
-            show_volume=flag_cols[0].checkbox('成交量',value=True,key='v73_volume')
-            show_rsi=flag_cols[1].checkbox('RSI',value=True,key='v73_rsi')
-            show_macd=flag_cols[2].checkbox('MACD',value=True,key='v73_macd')
-            show_levels=flag_cols[3].checkbox('支撐壓力',value=False,key='v73_levels')
-            show_ratio=flag_cols[4].checkbox('量比',value=True,key='v73_ratio')
+        if 'v731_focus_mode' not in st.session_state:st.session_state.v731_focus_mode=False
+        focus_mode=st.toggle('⛶ 專注模式｜隱藏操作面板，只看完整技術圖',key='v731_focus_mode')
+        if focus_mode:
+            st.markdown('''<style>
+            .terminal-title,.terminal-strip {display:none!important}
+            [data-testid="stTabs"] [data-baseweb="tab-list"] {display:none!important}
+            .block-container {padding-top:1rem!important}
+            </style>''',unsafe_allow_html=True)
+            st.caption('專注模式：取消上方開關即可返回完整選股工作台。')
+        with st.expander("⚙ 圖表設定 / 股票來源 / 技術指標",expanded=not focus_mode):
+            c1,c2,c3=st.columns([2,2,1.2],gap='small')
+            with c1:mode=st.radio('股票來源',['條件選股','我的自選股'],horizontal=True,key='v7_mode')
+            with c2:layout=st.radio('顯示方式',['聚焦主圖','六宮格','放大分析'],horizontal=True,key='v7_layout')
+            with c3:days=st.selectbox('顯示交易日數',[22,66,90,125,250],index=2,key='v7_days')
+            settings1,settings2=st.columns([1,2])
+            with settings1:
+                timeframe=st.radio('K 線週期',['日 K','週 K'],horizontal=True,key='v73_timeframe')
+                search_symbol=st.text_input('快速搜尋股票代碼',placeholder='輸入 2330 後按 Enter',key='v73_search')
+            with settings2:
+                st.caption('圖表顯示開關（放大分析與聚焦主圖）')
+                ma_periods=st.multiselect('均線 MA',[5,10,20,60],default=[20],key='v73_ma')
+                flag_cols=st.columns(5)
+                show_volume=flag_cols[0].checkbox('成交量',value=True,key='v73_volume')
+                show_rsi=flag_cols[1].checkbox('RSI',value=True,key='v73_rsi')
+                show_macd=flag_cols[2].checkbox('MACD',value=True,key='v73_macd')
+                show_levels=flag_cols[3].checkbox('支撐壓力',value=False,key='v73_levels')
+                show_ratio=flag_cols[4].checkbox('量比',value=True,key='v73_ratio')
+        if focus_mode:
+            layout='放大分析'
         if search_symbol.strip():
             candidate=search_symbol.strip().split()[0].upper()
             if candidate in available:
                 st.session_state.v7_focus=candidate
                 st.caption(f'快速搜尋已選擇 {candidate} {names.get(candidate,"")}；下方圖表會顯示此股票。')
             else:st.warning('找不到此股票的歷史行情。')
-        if mode=='條件選股':
-            base=[x for x in st.session_state.get('latest_screened_symbols',[]) if x in available][:6]
-            if not base:base=fallback[:6]
-            if st.button('↻ 套用最新篩選前六檔',help='以全市場選股頁籤目前的篩選條件為準'):
-                st.session_state.v7_screen_override=[]
-                st.session_state.pop('v7_screen_select',None)
-            active=st.session_state.v7_screen_override or base
-            selection=st.multiselect('條件選股股票（可手動替換，最多六檔）',universe,default=active,max_selections=6,
-                format_func=lambda x:f'{x} {names.get(x,"")}',key='v7_screen_select')
-            st.session_state.v7_screen_override=selection
-        else:
-            selection=st.multiselect('我的自選股（最多六檔）',universe,default=[x for x in st.session_state.v7_watch if x in available],max_selections=6,
-                format_func=lambda x:f'{x} {names.get(x,"")}',key='v7_watch_select')
-            st.session_state.v7_watch=selection
-        st.caption('主圖與成交量／RSI／MACD 共用時間軸，滾輪縮放與拖曳同步；最遠只顯示已下載的一年資料。')
+        with st.expander('☷ 股票清單 / 選擇股票',expanded=not focus_mode):
+            if mode=='條件選股':
+                base=[x for x in st.session_state.get('latest_screened_symbols',[]) if x in available][:6]
+                if not base:base=fallback[:6]
+                if st.button('↻ 套用最新篩選前六檔',help='以全市場選股頁籤目前的篩選條件為準'):
+                    st.session_state.v7_screen_override=[]
+                    st.session_state.pop('v7_screen_select',None)
+                active=st.session_state.v7_screen_override or base
+                selection=st.multiselect('條件選股股票（可手動替換，最多六檔）',universe,default=active,max_selections=6,
+                    format_func=lambda x:f'{x} {names.get(x,"")}',key='v7_screen_select')
+                st.session_state.v7_screen_override=selection
+            else:
+                selection=st.multiselect('我的自選股（最多六檔）',universe,default=[x for x in st.session_state.v7_watch if x in available],max_selections=6,
+                    format_func=lambda x:f'{x} {names.get(x,"")}',key='v7_watch_select')
+                st.session_state.v7_watch=selection
+        if not focus_mode:st.caption('主圖與成交量／RSI／MACD 共用時間軸，滾輪縮放與拖曳同步；最遠只顯示已下載的一年資料。')
         if search_symbol.strip() and st.session_state.get('v7_focus') in available and st.session_state.v7_focus not in selection:
             selection=[st.session_state.v7_focus]+selection[:5]
         if not selection:st.info('請至少選擇一檔股票。')
@@ -289,10 +343,11 @@ with charts:
             if 'v7_focus' not in st.session_state or st.session_state.v7_focus not in selection:st.session_state.v7_focus=selection[0]
             focus=st.session_state.v7_focus
             if layout in ('聚焦主圖','放大分析'):
-                left,right=st.columns([3.4,1.1],gap='small') if layout=='聚焦主圖' else st.columns([12,1],gap='small')
+                from contextlib import nullcontext
+                left,right=(st.container(),nullcontext()) if focus_mode else (st.columns([3.4,1.1],gap='small') if layout=='聚焦主圖' else st.columns([12,1],gap='small'))
                 with right:
-                    st.markdown('**點擊切換主圖**')
-                    for sym in selection:
+                    if not focus_mode:st.markdown('**點擊切換主圖**')
+                    for sym in (selection if not focus_mode else []):
                         label=f'{"● " if sym==focus else ""}{sym} {names.get(sym,"")}'
                         if st.button(label,key=f'focus_{sym}',use_container_width=True,type='primary' if sym==focus else 'secondary'):
                             st.session_state.v7_focus=sym
@@ -312,8 +367,8 @@ with charts:
                                 st.session_state.v7_layout='聚焦主圖'
                                 st.rerun()
                 st.caption('六宮格僅繪製 K 線及 MA20；點擊「放大此股票」查看同步指標。')
-            st.caption('放大分析可用 Plotly 工具列的全螢幕圖表功能；跨面板共用日期軸。週 K 僅有約 52 根，MA60 週線可能無法計算。')
-            st.caption(f'歷史資料涵蓋 {len(available):,} 檔；Yahoo Finance 歷史價格與官方快照可能有還原權息差異，非即時行情。')
+            if not focus_mode:st.caption('放大分析可用 Plotly 工具列的全螢幕圖表功能；跨面板共用日期軸。週 K 僅有約 52 根，MA60 週線可能無法計算。')
+            if not focus_mode:st.caption(f'歷史資料涵蓋 {len(available):,} 檔；Yahoo Finance 歷史價格與官方快照可能有還原權息差異，非即時行情。')
 
 with market_tab:
     st.markdown('<div class="panel-label">▥ MARKET OVERVIEW / 市場概覽</div>',unsafe_allow_html=True)
