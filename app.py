@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
-st.set_page_config(page_title='TW Terminal V6 | 台股選股', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
+st.set_page_config(page_title='TW Terminal V7 | 台股選股', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
 st.markdown('''<style>
 :root {color-scheme:dark}
 html,body,[data-testid="stAppViewContainer"],.stApp {background:#080e17;color:#dce7f3}
@@ -94,6 +94,7 @@ with screen:
     if trust:view=view[view.trust_lots>trust_min]
     if fresh:view=view[view.technical_day==tech_day]
     view=view.sort_values(['trust_lots','symbol'],ascending=[False,True],na_position='last')
+    st.session_state['latest_screened_symbols']=view.symbol.astype(str).tolist()
     with results:
         st.markdown(f'<div class="panel-label">▤ MARKET WATCH / 篩選結果　<span class="tag">{len(view):,} 檔</span></div>',unsafe_allow_html=True)
         if view.empty:st.info('目前沒有符合條件的股票。可以先取消投信買超，或調整 RSI 門檻。')
@@ -138,57 +139,95 @@ def candle_figure(rows, title, count=90, indicators=True):
         fig.add_trace(go.Scatter(x=h.date,y=h.ma20,mode='lines',name='MA20',line=dict(color='#f6c15e',width=1.5)))
     fig.update_layout(title=dict(text=title,font=dict(size=13)),height=300,margin=dict(l=7,r=7,t=35,b=10),
         template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',font=dict(color='#b8cadc',size=10),
-        xaxis_rangeslider_visible=False,showlegend=False,dragmode='pan',
+        xaxis_rangeslider_visible=False,showlegend=False,dragmode='pan',uirevision=title,
         xaxis=dict(type='category',nticks=6,showgrid=False),yaxis=dict(showgrid=True,gridcolor='#243348'))
     return fig
 
 with charts:
-    st.markdown('<div class="panel-label">▤ MULTI CHART / 六宮格歷史 K 線 · 每日快照，非即時行情</div>',unsafe_allow_html=True)
+    st.markdown('<div class="panel-label">▤ INTERACTIVE CHART / V7 互動 K 線 · 非即時行情</div>',unsafe_allow_html=True)
     hpath=ROOT/'data'/'history.csv.gz'
     history=load_history(hpath.stat().st_mtime if hpath.exists() else 0)
     if history.empty:
-        st.warning('目前沒有歷史 K 線資料。請在 GitHub Actions 重新執行 Update Taiwan stock snapshot；V6 的 update_data.py 會新增 data/history.csv.gz。')
+        st.warning('找不到 data/history.csv.gz。請在 GitHub Actions 執行 Update Taiwan stock snapshot。')
     else:
-        available=set(history.symbol.unique())
+        available=set(history.symbol.astype(str))
         names=dict(zip(df.symbol.astype(str),df.name.astype(str)))
-        options=[x for x in df.symbol.astype(str).tolist() if x in available]
+        universe=[x for x in df.symbol.astype(str) if x in available]
         preferred=['2330','2317','2454','2382','2303','2603']
-        defaults=[x for x in preferred if x in available]
-        defaults += [x for x in options if x not in defaults][:max(0,6-len(defaults))]
-        control1,control2=st.columns([4,1])
-        with control1:
-            selected=st.multiselect('同時觀察股票（最多 6 檔）',options,default=defaults[:6],max_selections=6,
-                format_func=lambda x:f'{x} {names.get(x, "")}',key='chart_symbols')
-        with control2:
-            days=st.selectbox('顯示交易日數',[30,60,90,120,180],index=2)
-        if not selected:st.info('請選擇至少一檔股票。')
-        for start in range(0,len(selected),3):
-            cols=st.columns(3,gap='small')
-            for j,symbol in enumerate(selected[start:start+3]):
-                with cols[j]:
-                    d=history.loc[history.symbol==symbol]
-                    if len(d)<2:st.info(f'{symbol} 歷史資料不足');continue
-                    st.plotly_chart(candle_figure(d,f'{symbol} {names.get(symbol, "")}',days),use_container_width=True,
-                        config={'displayModeBar':False},key=f'candle_{symbol}')
-        st.caption(f'歷史 K 線涵蓋 {len(available):,} 檔；採 Yahoo Finance 調整後 OHLC，非即時行情。MA20 依圖表歷史資料計算。')
-        with st.expander('單檔進階指標：成交量 / RSI / MACD'):
-            focus=st.selectbox('詳細分析股票',selected,format_func=lambda x:f'{x} {names.get(x, "")}') if selected else None
-            if focus:
+        fallback=[x for x in preferred if x in available]
+        fallback += [x for x in universe if x not in fallback][:6-len(fallback)]
+        if 'v7_watch' not in st.session_state:st.session_state.v7_watch=fallback[:6]
+        if 'v7_screen_override' not in st.session_state:st.session_state.v7_screen_override=[]
+        if 'v7_mode' not in st.session_state:st.session_state.v7_mode='條件選股'
+        if 'v7_layout' not in st.session_state:st.session_state.v7_layout='聚焦主圖'
+        c1,c2,c3=st.columns([2,2,1.2],gap='small')
+        with c1:mode=st.radio('股票來源',['條件選股','我的自選股'],horizontal=True,key='v7_mode')
+        with c2:layout=st.radio('顯示方式',['聚焦主圖','六宮格'],horizontal=True,key='v7_layout')
+        with c3:days=st.selectbox('顯示交易日數',[30,60,90,120,180],index=2,key='v7_days')
+        if mode=='條件選股':
+            base=[x for x in st.session_state.get('latest_screened_symbols',[]) if x in available][:6]
+            if not base:base=fallback[:6]
+            if st.button('↻ 套用最新篩選前六檔',help='以全市場選股頁籤目前的篩選條件為準'):
+                st.session_state.v7_screen_override=[]
+                st.session_state.pop('v7_screen_select',None)
+            active=st.session_state.v7_screen_override or base
+            selection=st.multiselect('條件選股股票（可手動替換，最多六檔）',universe,default=active,max_selections=6,
+                format_func=lambda x:f'{x} {names.get(x,"")}',key='v7_screen_select')
+            st.session_state.v7_screen_override=selection
+        else:
+            selection=st.multiselect('我的自選股（最多六檔）',universe,default=[x for x in st.session_state.v7_watch if x in available],max_selections=6,
+                format_func=lambda x:f'{x} {names.get(x,"")}',key='v7_watch_select')
+            st.session_state.v7_watch=selection
+        st.caption('滑鼠滾輪縮放、拖曳平移、移動游標查看 K 線；雙模式配置在目前瀏覽器工作階段內分開保留。')
+        if not selection:st.info('請至少選擇一檔股票。')
+        else:
+            if 'v7_focus' not in st.session_state or st.session_state.v7_focus not in selection:st.session_state.v7_focus=selection[0]
+            if layout=='聚焦主圖':
+                left,right=st.columns([3.4,1.1],gap='small')
+                with right:
+                    st.markdown('**點擊切換主圖**')
+                    for sym in selection:
+                        label=f'{"● " if sym==st.session_state.v7_focus else ""}{sym} {names.get(sym,"")}'
+                        if st.button(label,key=f'focus_{sym}',use_container_width=True,type='primary' if sym==st.session_state.v7_focus else 'secondary'):
+                            st.session_state.v7_focus=sym
+                            st.rerun()
+                with left:
+                    focus=st.session_state.v7_focus
+                    d=history.loc[history.symbol==focus]
+                    st.plotly_chart(candle_figure(d,f'{focus} {names.get(focus,"")}',days),use_container_width=True,
+                        config={'scrollZoom':True,'displayModeBar':True,'displaylogo':False},key=f'v7_main_{focus}')
+            else:
+                for start in range(0,len(selection),3):
+                    cols=st.columns(3,gap='small')
+                    for j,sym in enumerate(selection[start:start+3]):
+                        with cols[j]:
+                            st.plotly_chart(candle_figure(history.loc[history.symbol==sym],f'{sym} {names.get(sym,"")}',days),
+                                use_container_width=True,config={'scrollZoom':True,'displayModeBar':True,'displaylogo':False},key=f'v7_grid_{sym}')
+                            if st.button('放大此股票 ↗',key=f'v7_expand_{sym}',use_container_width=True):
+                                st.session_state.v7_focus=sym
+                                st.session_state.v7_layout='聚焦主圖'
+                                st.rerun()
+                focus=st.session_state.v7_focus
+            if focus not in selection:focus=selection[0]
+            with st.expander(f'▾ {focus} {names.get(focus,"")} · 成交量 / RSI / MACD',expanded=(layout=='聚焦主圖')):
                 d=history.loc[history.symbol==focus].sort_values('date').copy()
-                delta=d.close.diff();up=delta.clip(lower=0).ewm(alpha=1/14,adjust=False).mean();down=(-delta.clip(upper=0)).ewm(alpha=1/14,adjust=False).mean()
-                d['rsi']=100-100/(1+up/down.replace(0,np.nan))
+                delta=d.close.diff();gain=delta.clip(lower=0).ewm(alpha=1/14,adjust=False).mean();loss=(-delta.clip(upper=0)).ewm(alpha=1/14,adjust=False).mean()
+                d['rsi']=100-100/(1+gain/loss.replace(0,np.nan))
                 ema12=d.close.ewm(span=12,adjust=False).mean();ema26=d.close.ewm(span=26,adjust=False).mean()
                 d['macd']=ema12-ema26;d['signal']=d.macd.ewm(span=9,adjust=False).mean()
                 d=d.tail(days)
-                for series,label,color in [('volume','成交量','#5b91bb'),('rsi','RSI(14)','#e4c16d')]:
-                    f=go.Figure(go.Bar(x=d.date,y=d[series],marker_color=color) if series=='volume' else go.Scatter(x=d.date,y=d[series],line=dict(color=color)))
-                    f.update_layout(title=label,height=180,margin=dict(l=10,r=10,t=30,b=8),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',xaxis=dict(type='category',nticks=8))
-                    st.plotly_chart(f,use_container_width=True,config={'displayModeBar':False})
-                f=go.Figure()
-                f.add_trace(go.Scatter(x=d.date,y=d.macd,name='MACD',line=dict(color='#19c6a1')))
-                f.add_trace(go.Scatter(x=d.date,y=d.signal,name='Signal',line=dict(color='#f6c15e')))
-                f.update_layout(title='MACD',height=190,margin=dict(l=10,r=10,t=30,b=8),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',xaxis=dict(type='category',nticks=8))
-                st.plotly_chart(f,use_container_width=True,config={'displayModeBar':False})
+                from plotly.subplots import make_subplots
+                fig=make_subplots(rows=3,cols=1,shared_xaxes=True,vertical_spacing=.075,row_heights=[.34,.33,.33],subplot_titles=['成交量','RSI(14)','MACD'])
+                fig.add_trace(go.Bar(x=d.date,y=d.volume,marker_color='#5b91bb',name='成交量'),row=1,col=1)
+                fig.add_trace(go.Scatter(x=d.date,y=d.rsi,line=dict(color='#f6c15e'),name='RSI'),row=2,col=1)
+                fig.add_hline(y=70,line_dash='dot',line_color='#e66b78',row=2,col=1)
+                fig.add_hline(y=30,line_dash='dot',line_color='#2bc7a2',row=2,col=1)
+                fig.add_trace(go.Scatter(x=d.date,y=d.macd,name='DIF',line=dict(color='#2bc7a2')),row=3,col=1)
+                fig.add_trace(go.Scatter(x=d.date,y=d.signal,name='Signal',line=dict(color='#f6c15e')),row=3,col=1)
+                fig.update_layout(height=480,margin=dict(l=15,r=15,t=38,b=18),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',font_color='#b8cadc',legend=dict(orientation='h',y=1.1),uirevision=f'v7_{focus}')
+                fig.update_xaxes(type='category',nticks=8)
+                st.plotly_chart(fig,use_container_width=True,config={'scrollZoom':True,'displayModeBar':True,'displaylogo':False},key=f'v7_indicators_{focus}')
+            st.caption(f'歷史資料涵蓋 {len(available):,} 檔；Yahoo Finance 歷史價格與官方快照可能有還原權息差異，非即時行情。')
 
 with market_tab:
     st.markdown('<div class="panel-label">▥ MARKET OVERVIEW / 市場概覽</div>',unsafe_allow_html=True)
