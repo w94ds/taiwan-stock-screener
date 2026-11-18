@@ -1,0 +1,20 @@
+{
+  "updated_at_utc": "2026-11-18T12:23:52.485555+00:00",
+  "symbols_official": 1968,
+  "symbols_with_indicators": 1964,
+  "symbols_failed": 4,
+  "failed_sample": [
+    "7710",
+    "7867",
+    "3718",
+    "7856"
+  ],
+  "institution_day": "2026-11-18",
+  "sources": [
+    "TWSE STOCK_DAY_ALL",
+    "TPEx daily quotes",
+    "Yahoo Finance historical adjusted prices",
+    "TWSE T86 institutional flow"
+  ],
+  "notes": "Official quote API may show the prior trading session. Technical values and official close may use different adjustment bases; institution flow is TWSE only. Missing values are not zero."
+}
