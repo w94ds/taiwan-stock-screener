@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
-st.set_page_config(page_title='TW Terminal V7.3.1 | 台股選股', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
+st.set_page_config(page_title='TW Terminal V7.3.3 | 台股選股', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
 st.markdown('''<style>
 :root {color-scheme:dark}
 html,body,[data-testid="stAppViewContainer"],.stApp {background:#080e17;color:#dce7f3}
@@ -55,7 +55,7 @@ meta_path=ROOT/'data'/'metadata.json'
 try: meta=json.loads(meta_path.read_text(encoding='utf-8')) if meta_path.exists() else {}
 except (ValueError,OSError): meta={}
 
-st.markdown('<div class="terminal-title">▥ TW TERMINAL <span class="tag">/ V7.3.1</span>　<span class="terminal-sub">台股全市場選股 · 專業交易工作台</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="terminal-title">▥ TW TERMINAL <span class="tag">/ V7.3.3</span>　<span class="terminal-sub">台股全市場選股 · 專業交易工作台</span></div>',unsafe_allow_html=True)
 if df.empty:
     st.warning('目前沒有 data/snapshot.csv.gz。請先在 GitHub → Actions 執行 Update Taiwan stock snapshot，確認 data 資料夾產生後重新整理。')
     st.stop()
@@ -202,6 +202,60 @@ def compute_indicators(d):
         d[f'support{n}']=d.low.shift(1).rolling(n,min_periods=n).min()
     return d
 
+def swing_zones(bars, left=3, right=3, lookback=125, atr_factor=.65, min_touches=2):
+    """Confirmed swing zones. Pivot at i becomes usable only at i+right.
+
+    Only historical, confirmed pivots contribute to the latest zones. Zone width
+    uses a prior rolling ATR estimate, and does not require future candles.
+    """
+    d=bars.reset_index(drop=True).copy()
+    if len(d)<left+right+3:return []
+    high=pd.to_numeric(d.high,errors='coerce').to_numpy(dtype=float)
+    low=pd.to_numeric(d.low,errors='coerce').to_numpy(dtype=float)
+    close=pd.to_numeric(d.close,errors='coerce').to_numpy(dtype=float)
+    tr=np.maximum.reduce([high-low,np.abs(high-np.r_[np.nan,close[:-1]]),np.abs(low-np.r_[np.nan,close[:-1]])])
+    atr=pd.Series(tr).rolling(14,min_periods=5).mean().to_numpy()
+    events=[]
+    start=max(left,len(d)-lookback)
+    for i in range(start,len(d)-right):
+        window_high=high[i-left:i+right+1]
+        window_low=low[i-left:i+right+1]
+        if not np.isfinite(window_high).all() or not np.isfinite(window_low).all():continue
+        # Strictly unique extrema avoid counting flat tops repeatedly.
+        if high[i]==window_high.max() and np.sum(window_high==high[i])==1:
+            events.append(('壓力',float(high[i]),i+right,float(atr[i]) if np.isfinite(atr[i]) else np.nan))
+        if low[i]==window_low.min() and np.sum(window_low==low[i])==1:
+            events.append(('支撐',float(low[i]),i+right,float(atr[i]) if np.isfinite(atr[i]) else np.nan))
+    zones=[]
+    for kind,price,confirmed,local_atr in events:
+        width=max(price*.003,local_atr*atr_factor if np.isfinite(local_atr) else 0)
+        matches=[z for z in zones if z['kind']==kind and abs(z['center']-price)<=max(z['width'],width)]
+        if matches:
+            z=min(matches,key=lambda z:abs(z['center']-price))
+            z['prices'].append(price)
+            z['center']=float(np.median(z['prices']))
+            z['width']=max(z['width'],width)
+            z['confirmed']=max(z['confirmed'],confirmed)
+        else:
+            zones.append(dict(kind=kind,center=price,width=width,prices=[price],confirmed=confirmed))
+    result=[]
+    for z in zones:
+        if len(z['prices'])<min_touches:continue
+        # Keep the region narrow; do not widen to the full day's candle.
+        half=max(z['width']*.5,(max(z['prices'])-min(z['prices']))*.5)
+        result.append(dict(kind=z['kind'],center=z['center'],lower=z['center']-half,
+                           upper=z['center']+half,touches=len(z['prices']),confirmed=z['confirmed']))
+    return sorted(result,key=lambda z:(-z['touches'],-z['confirmed']))
+
+
+def zone_summary(bars, zones):
+    if bars.empty:return []
+    close=float(bars.close.iloc[-1]);result=[]
+    for z in zones:
+        distance=(z['center']/close-1)*100 if close else np.nan
+        result.append({**z,'distance_pct':distance})
+    return result
+
 def candle_figure(rows,title,count=90,timeframe='日 K'):
     d=compute_indicators(prepare_bars(rows,timeframe)).tail(count)
     x=d.date.dt.strftime('%Y-%m-%d')
@@ -217,8 +271,10 @@ def candle_figure(rows,title,count=90,timeframe='日 K'):
 
 def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_volume=True,
                   show_rsi=True,show_macd=True,show_levels=False,show_ratio=True,expanded=False,
-                  level_mode='最新水平線'):
-    d=compute_indicators(prepare_bars(rows,timeframe))
+                  level_mode='最新水平線',show_pivot_zones=False):
+    full_bars=prepare_bars(rows,timeframe)
+    zones=swing_zones(full_bars) if show_pivot_zones else []
+    d=compute_indicators(full_bars)
     d=d.tail(count).copy()
     panes=['K']+(['成交量'] if show_volume else [])+(['RSI'] if show_rsi else [])+(['MACD'] if show_macd else [])
     # Dynamically redistribute space when any indicator panel is hidden.
@@ -265,6 +321,21 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
                 yshift=offsets[label],showarrow=False,
                 font=dict(color=color,size=10),bgcolor='#101a28',bordercolor=color,borderwidth=.5)
 
+    if show_pivot_zones and zones and not d.empty:
+        last_close=float(d.close.iloc[-1])
+        # Nearest two zones of each type; prefer nearby confirmed multi-touch areas.
+        for kind,color in [('壓力','#e9a75c'),('支撐','#4bd1af')]:
+            candidates=sorted((z for z in zones if z['kind']==kind),
+                key=lambda z:(abs(z['center']-last_close),-z['touches']))[:2]
+            for idx,z in enumerate(candidates):
+                fig.add_hrect(y0=z['lower'],y1=z['upper'],fillcolor=color,opacity=.14,
+                              line_width=0,row=1,col=1)
+                pct=(z['center']/last_close-1)*100 if last_close else 0
+                fig.add_annotation(x=1.005,y=z['center'],xref='paper',yref='y',
+                    text=f"{kind}區 {z['lower']:,.1f}–{z['upper']:,.1f} ({pct:+.1f}%) ×{z['touches']}",
+                    xanchor='left',showarrow=False,font=dict(color=color,size=10),
+                    bgcolor='#101a28',bordercolor=color,borderwidth=.5,yshift=idx*12)
+
     row=2
     if show_volume:
         fig.add_trace(go.Bar(x=x,y=d.volume,name='成交量',marker_color='#5b91bb'),row=row,col=1)
@@ -283,7 +354,7 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
         fig.add_trace(go.Scatter(x=x,y=d.dif,name='DIF',line=dict(color='#2bc7a2',width=1.4)),row=row,col=1)
         fig.add_trace(go.Scatter(x=x,y=d.signal,name='Signal',line=dict(color='#f6c15e',width=1.4)),row=row,col=1)
     fig.update_layout(title=dict(text=title,font=dict(size=14)),height=(450 if expanded else 360)+max(0,len(panes)-1)*(175 if expanded else 145),
-        margin=dict(l=12,r=112 if show_levels else 15,t=55,b=28),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',
+        margin=dict(l=12,r=205 if show_pivot_zones else (112 if show_levels else 15),t=55,b=28),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',
         font=dict(color='#b8cadc',size=10),xaxis_rangeslider_visible=False,showlegend=True,
         legend=dict(orientation='h',y=1.03,x=0),dragmode='pan',hovermode='x unified',
         uirevision=f'{title}_{timeframe}_{count}_{expanded}')
@@ -292,7 +363,7 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
     return fig
 
 with charts:
-    if not st.session_state.get('v731_focus_mode',False):st.markdown('<div class="panel-label">▤ SWING TERMINAL / V7.3.2 波段交易工作台 · 非即時行情</div>',unsafe_allow_html=True)
+    if not st.session_state.get('v731_focus_mode',False):st.markdown('<div class="panel-label">▤ SWING TERMINAL / V7.3.3 波段交易工作台 · 非即時行情</div>',unsafe_allow_html=True)
     hpath=ROOT/'data'/'history.csv.gz'
     history=load_history(hpath.stat().st_mtime if hpath.exists() else 0)
     if history.empty:
@@ -335,6 +406,7 @@ with charts:
                 show_macd=flag_cols[2].checkbox('MACD',value=True,key='v73_macd')
                 show_levels=flag_cols[3].checkbox('支撐壓力',value=False,key='v73_levels')
                 show_ratio=flag_cols[4].checkbox('量比',value=True,key='v73_ratio')
+                show_pivot_zones=st.checkbox('Pivot 波段支撐壓力區（至少兩次確認轉折）',value=False,key='v733_pivot_zones')
                 level_mode=st.radio('支撐壓力顯示方式',['最新水平線','歷史動態線'],
                     horizontal=True,key='v732_level_mode',disabled=not show_levels,
                     help='最新水平線：顯示最新 R20/S20/R60/S60；歷史動態線：顯示逐日變化的階梯線。')
@@ -368,6 +440,28 @@ with charts:
         else:
             if 'v7_focus' not in st.session_state or st.session_state.v7_focus not in selection:st.session_state.v7_focus=selection[0]
             focus=st.session_state.v7_focus
+            if show_pivot_zones:
+                full_bars=prepare_bars(history.loc[history.symbol==focus],timeframe)
+                computed=compute_indicators(full_bars)
+                zones=zone_summary(full_bars,swing_zones(full_bars))
+                if zones:
+                    current=float(full_bars.close.iloc[-1])
+                    above=sorted([z for z in zones if z['center']>=current],key=lambda z:z['center'])
+                    below=sorted([z for z in zones if z['center']<current],key=lambda z:-z['center'])
+                    ca,cb=st.columns(2)
+                    for column,group,label in [(ca,above,'上方轉折區'),(cb,below,'下方轉折區')]:
+                        if group:
+                            z=group[0]
+                            column.metric(label,f"{z['lower']:,.1f}–{z['upper']:,.1f}",f"{z['distance_pct']:+.2f}% / {z['touches']} 次轉折")
+                        else:column.metric(label,'尚無符合條件區間')
+                else:st.caption('Pivot 區間：目前沒有至少兩次相近、且已確認的轉折點。')
+                if not computed.empty:
+                    last=computed.iloc[-1]
+                    if pd.notna(last.resistance20) and pd.notna(last.volume_ratio):
+                        is_breakout=last.close>last.resistance20
+                        confirmed=is_breakout and last.volume_ratio>=1.5
+                        st.caption(f"20 日突破：{'突破且量比 ≥ 1.5×' if confirmed else ('突破但量比不足' if is_breakout else '尚未突破')} ｜ 最新量比 {last.volume_ratio:.2f}×（以先前 20 根均量為基準）")
+                st.caption('Pivot 採左右各 3 根 K 棒確認，轉折訊號在右側第 3 根完成後才可用；區間至少 2 次相近轉折，非保證有效的支撐或壓力。')
             if layout in ('聚焦主圖','放大分析'):
                 from contextlib import nullcontext
                 left,right=(st.container(),nullcontext()) if focus_mode else (st.columns([3.4,1.1],gap='small') if layout=='聚焦主圖' else st.columns([12,1],gap='small'))
@@ -379,7 +473,7 @@ with charts:
                             st.session_state.v7_focus=sym
                             st.rerun()
                 with left:
-                    st.plotly_chart(linked_figure(history.loc[history.symbol==focus],f'{focus} {names.get(focus,"")}',days,timeframe,ma_periods,show_volume,show_rsi,show_macd,show_levels,show_ratio,layout=='放大分析' or focus_mode,level_mode),use_container_width=True,
+                    st.plotly_chart(linked_figure(history.loc[history.symbol==focus],f'{focus} {names.get(focus,"")}',days,timeframe,ma_periods,show_volume,show_rsi,show_macd,show_levels,show_ratio,layout=='放大分析' or focus_mode,level_mode,show_pivot_zones),use_container_width=True,
                         config={'scrollZoom':True,'displayModeBar':True,'displaylogo':False,'doubleClick':'reset'},key=f'v73_linked_{focus}_{timeframe}_{layout}')
             else:
                 for start in range(0,len(selection),3):
