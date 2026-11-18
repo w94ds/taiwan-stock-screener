@@ -100,14 +100,14 @@ def run():
         batch=symbols[start:start+40]
         tickers=[s+('.TWO' if stocks[s]['market']=='上櫃' else '.TW') for s in batch]
         try:
-            frame=yf.download(tickers,period='9mo',auto_adjust=True,progress=False,threads=True,group_by='ticker',timeout=25)
+            frame=yf.download(tickers,period='1y',auto_adjust=True,progress=False,threads=True,group_by='ticker',timeout=25)
             for s,t in zip(batch,tickers):
                 data=extract_one(frame,t)
                 if data:
                     records.append({**stocks[s],**data,**institutions.get(s,{}),'institution_day':inst_day if s in institutions else None})
                     try:
                         h=frame[t] if isinstance(frame.columns,pd.MultiIndex) else frame
-                        h=h[['Open','High','Low','Close','Volume']].dropna(subset=['Close']).tail(190).copy()
+                        h=h[['Open','High','Low','Close','Volume']].dropna(subset=['Close']).copy()
                         h.columns=['open','high','low','close','volume']
                         h=h.reset_index()
                         h=h.rename(columns={h.columns[0]:'date'})
