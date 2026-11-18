@@ -94,7 +94,7 @@ def run():
     stocks,sources=official_prices()
     institutions,inst_day=get_institutions()
     symbols=list(stocks)
-    records=[];failed=[]
+    records=[];failed=[];history_parts=[]
     # Small batches keep memory manageable; rate limiting may still cause partial coverage.
     for start in range(0,len(symbols),40):
         batch=symbols[start:start+40]
@@ -105,6 +105,17 @@ def run():
                 data=extract_one(frame,t)
                 if data:
                     records.append({**stocks[s],**data,**institutions.get(s,{}),'institution_day':inst_day if s in institutions else None})
+                    try:
+                        h=frame[t] if isinstance(frame.columns,pd.MultiIndex) else frame
+                        h=h[['Open','High','Low','Close','Volume']].dropna(subset=['Close']).tail(190).copy()
+                        h.columns=['open','high','low','close','volume']
+                        h=h.reset_index()
+                        h=h.rename(columns={h.columns[0]:'date'})
+                        h['date']=pd.to_datetime(h['date']).dt.strftime('%Y-%m-%d')
+                        h['symbol']=s
+                        history_parts.append(h[['symbol','date','open','high','low','close','volume']])
+                    except Exception as he:
+                        print('History extraction warning',s,he,flush=True)
                 else:failed.append(s)
         except Exception as e:
             print('Batch warning',start,e,flush=True);failed.extend(batch)
@@ -117,6 +128,13 @@ def run():
     temp=OUT/'snapshot.tmp.gz'
     data.to_csv(temp,index=False,compression='gzip')
     os.replace(temp,OUT/'snapshot.csv.gz')
+    if history_parts:
+        history=pd.concat(history_parts,ignore_index=True)
+        history=history.drop_duplicates(['symbol','date']).sort_values(['symbol','date'])
+        htemp=OUT/'history.tmp.gz'
+        history.to_csv(htemp,index=False,compression='gzip')
+        os.replace(htemp,OUT/'history.csv.gz')
+        print(f'Historical candles: {len(history)} rows, {history.symbol.nunique()} symbols',flush=True)
     metadata={'updated_at_utc':dt.datetime.now(dt.timezone.utc).isoformat(),'symbols_official':len(symbols),'symbols_with_indicators':len(data),'symbols_failed':len(failed),'failed_sample':failed[:25],'institution_day':inst_day,'sources':sources+['Yahoo Finance historical adjusted prices','TWSE T86 institutional flow'],'notes':'Official quote API may show the prior trading session. Technical values and official close may use different adjustment bases; institution flow is TWSE only. Missing values are not zero.'}
     (OUT/'metadata.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding='utf-8')
     print(metadata,flush=True)

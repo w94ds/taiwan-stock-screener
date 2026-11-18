@@ -7,12 +7,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
-st.set_page_config(page_title='TW Terminal V5 | 台股選股', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
+st.set_page_config(page_title='TW Terminal V6 | 台股選股', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
 st.markdown('''<style>
 :root {color-scheme:dark}
 html,body,[data-testid="stAppViewContainer"],.stApp {background:#080e17;color:#dce7f3}
-header[data-testid="stHeader"] {background:#080e17;height:2rem}
-.block-container {max-width:100%;padding:0.25rem 1.1rem 1rem}
+header[data-testid="stHeader"] {background:#080e17;min-height:2.5rem}
+.block-container {max-width:100%;padding:3.2rem 1.1rem 1.2rem}
 [data-testid="stVerticalBlock"] {gap:.48rem}
 h1,h2,h3 {color:#eef5fc!important;letter-spacing:.02em}
 h1 {font-size:1.35rem!important;margin:0!important}
@@ -28,11 +28,14 @@ h3 {font-size:1rem!important}
 .stButton>button,.stDownloadButton>button {background:#123b46;color:#7df0db;border:1px solid #276477;border-radius:5px}
 [data-testid="stExpander"] {border:1px solid #26374a;background:#101a28}
 hr {border-color:#26374a}
-.terminal-title {font-weight:800;font-size:1.22rem;color:#eaf2fb}
+.terminal-title {font-weight:800;font-size:1.45rem;line-height:1.65;color:#eaf2fb;padding:4px 0 8px}
 .terminal-sub {font-size:.75rem;color:#8297ae}
-.terminal-strip {background:#101a28;border:1px solid #26374a;border-radius:6px;padding:9px 12px;margin:4px 0 8px}
+.terminal-strip {background:#101a28;border:1px solid #26374a;border-radius:6px;padding:12px 16px;margin:8px 0 14px;line-height:1.7;white-space:normal}
 .panel-label {font-size:.81rem;font-weight:700;letter-spacing:.08em;color:#9bb1c7;margin:4px 0 7px}
 .tag {color:#51e4c9}
+.stApp [data-testid="stMainBlockContainer"] {min-height:calc(100vh - 5rem)}
+[data-testid="stTabs"] [data-baseweb="tab-list"] {min-height:44px}
+@media (max-width:900px){.block-container{padding-top:3.8rem}}
 @media (min-width:1100px) {.block-container {padding-left:1.3rem;padding-right:1.3rem}}
 </style>''', unsafe_allow_html=True)
 
@@ -51,7 +54,7 @@ meta_path=ROOT/'data'/'metadata.json'
 try: meta=json.loads(meta_path.read_text(encoding='utf-8')) if meta_path.exists() else {}
 except (ValueError,OSError): meta={}
 
-st.markdown('<div class="terminal-title">▥ TW TERMINAL <span class="tag">/ V5</span>　<span class="terminal-sub">台股全市場選股 · 專業交易工作台</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="terminal-title">▥ TW TERMINAL <span class="tag">/ V6</span>　<span class="terminal-sub">台股全市場選股 · 專業交易工作台</span></div>',unsafe_allow_html=True)
 if df.empty:
     st.warning('目前沒有 data/snapshot.csv.gz。請先在 GitHub → Actions 執行 Update Taiwan stock snapshot，確認 data 資料夾產生後重新整理。')
     st.stop()
@@ -61,7 +64,7 @@ inst_day=str(meta.get('institution_day') or '無資料')
 coverage=len(df)/max(int(meta.get('symbols_official') or len(df)),1)*100
 st.markdown(f'<div class="terminal-strip">🟢 市場快照　 <b>{tech_day}</b>　　│　全市場 <b>{len(df):,}</b> 檔　　│　覆蓋率 <b>{coverage:.1f}%</b>　　│　上市法人資料 <b>{inst_day}</b>　　│　唯讀公開版 / 非即時報價</div>',unsafe_allow_html=True)
 
-screen,market_tab,about=st.tabs(['▦ 全市場選股','▥ 市場儀表板','ⓘ 資料說明與回測'])
+screen,charts,market_tab,about=st.tabs(['▦ 全市場選股','▤ 六宮格 K 線','▥ 市場儀表板','ⓘ 資料說明與回測'])
 with screen:
     filters,results,detail=st.columns([1.2,3.7,2.15],gap='small')
     with filters:
@@ -96,7 +99,7 @@ with screen:
         if view.empty:st.info('目前沒有符合條件的股票。可以先取消投信買超，或調整 RSI 門檻。')
         columns=['symbol','name','market','close','ma20','rsi','rsi_prev','macd','signal','trust_lots','foreign_lots','technical_day']
         labels={'symbol':'代號','name':'名稱','market':'市場','close':'收盤','ma20':'MA20','rsi':'RSI','rsi_prev':'前日RSI','macd':'MACD','signal':'訊號','trust_lots':'投信(張)','foreign_lots':'外資(張)','technical_day':'交易日'}
-        st.dataframe(view[[c for c in columns if c in view]].rename(columns=labels),hide_index=True,use_container_width=True,height=590)
+        st.dataframe(view[[c for c in columns if c in view]].rename(columns=labels),hide_index=True,use_container_width=True,height=720)
         st.download_button('↓ 匯出篩選 CSV',view.to_csv(index=False).encode('utf-8-sig'),'tw_terminal_screen.csv','text/csv',disabled=view.empty)
     with detail:
         st.markdown('<div class="panel-label">◈ SYMBOL DETAIL / 個股面板</div>',unsafe_allow_html=True)
@@ -114,6 +117,78 @@ with screen:
         fig.update_layout(height=230,margin=dict(l=8,r=8,t=10,b=12),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',font_color='#b8cadc',showlegend=False,yaxis_title=None)
         st.plotly_chart(fig,use_container_width=True,config={'displayModeBar':False})
         st.caption(f'技術資料日：{item.get("technical_day","未知")}。此圖比較指標快照，並非歷史 K 線。')
+
+
+@st.cache_data(ttl=300,show_spinner=False)
+def load_history(mtime):
+    hpath=ROOT/'data'/'history.csv.gz'
+    if not hpath.exists():return pd.DataFrame()
+    h=pd.read_csv(hpath,dtype={'symbol':str})
+    for c in ['open','high','low','close','volume']:
+        h[c]=pd.to_numeric(h[c],errors='coerce')
+    return h
+
+def candle_figure(rows, title, count=90, indicators=True):
+    h=rows.sort_values('date').tail(count).copy()
+    h['ma20']=h.close.rolling(20,min_periods=1).mean()
+    fig=go.Figure()
+    fig.add_trace(go.Candlestick(x=h.date,open=h.open,high=h.high,low=h.low,close=h.close,
+        increasing_line_color='#19c6a1',decreasing_line_color='#f16d7b',name='K線'))
+    if indicators:
+        fig.add_trace(go.Scatter(x=h.date,y=h.ma20,mode='lines',name='MA20',line=dict(color='#f6c15e',width=1.5)))
+    fig.update_layout(title=dict(text=title,font=dict(size=13)),height=300,margin=dict(l=7,r=7,t=35,b=10),
+        template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',font=dict(color='#b8cadc',size=10),
+        xaxis_rangeslider_visible=False,showlegend=False,dragmode='pan',
+        xaxis=dict(type='category',nticks=6,showgrid=False),yaxis=dict(showgrid=True,gridcolor='#243348'))
+    return fig
+
+with charts:
+    st.markdown('<div class="panel-label">▤ MULTI CHART / 六宮格歷史 K 線 · 每日快照，非即時行情</div>',unsafe_allow_html=True)
+    hpath=ROOT/'data'/'history.csv.gz'
+    history=load_history(hpath.stat().st_mtime if hpath.exists() else 0)
+    if history.empty:
+        st.warning('目前沒有歷史 K 線資料。請在 GitHub Actions 重新執行 Update Taiwan stock snapshot；V6 的 update_data.py 會新增 data/history.csv.gz。')
+    else:
+        available=set(history.symbol.unique())
+        names=dict(zip(df.symbol.astype(str),df.name.astype(str)))
+        options=[x for x in df.symbol.astype(str).tolist() if x in available]
+        preferred=['2330','2317','2454','2382','2303','2603']
+        defaults=[x for x in preferred if x in available]
+        defaults += [x for x in options if x not in defaults][:max(0,6-len(defaults))]
+        control1,control2=st.columns([4,1])
+        with control1:
+            selected=st.multiselect('同時觀察股票（最多 6 檔）',options,default=defaults[:6],max_selections=6,
+                format_func=lambda x:f'{x} {names.get(x, "")}',key='chart_symbols')
+        with control2:
+            days=st.selectbox('顯示交易日數',[30,60,90,120,180],index=2)
+        if not selected:st.info('請選擇至少一檔股票。')
+        for start in range(0,len(selected),3):
+            cols=st.columns(3,gap='small')
+            for j,symbol in enumerate(selected[start:start+3]):
+                with cols[j]:
+                    d=history.loc[history.symbol==symbol]
+                    if len(d)<2:st.info(f'{symbol} 歷史資料不足');continue
+                    st.plotly_chart(candle_figure(d,f'{symbol} {names.get(symbol, "")}',days),use_container_width=True,
+                        config={'displayModeBar':False},key=f'candle_{symbol}')
+        st.caption(f'歷史 K 線涵蓋 {len(available):,} 檔；採 Yahoo Finance 調整後 OHLC，非即時行情。MA20 依圖表歷史資料計算。')
+        with st.expander('單檔進階指標：成交量 / RSI / MACD'):
+            focus=st.selectbox('詳細分析股票',selected,format_func=lambda x:f'{x} {names.get(x, "")}') if selected else None
+            if focus:
+                d=history.loc[history.symbol==focus].sort_values('date').copy()
+                delta=d.close.diff();up=delta.clip(lower=0).ewm(alpha=1/14,adjust=False).mean();down=(-delta.clip(upper=0)).ewm(alpha=1/14,adjust=False).mean()
+                d['rsi']=100-100/(1+up/down.replace(0,np.nan))
+                ema12=d.close.ewm(span=12,adjust=False).mean();ema26=d.close.ewm(span=26,adjust=False).mean()
+                d['macd']=ema12-ema26;d['signal']=d.macd.ewm(span=9,adjust=False).mean()
+                d=d.tail(days)
+                for series,label,color in [('volume','成交量','#5b91bb'),('rsi','RSI(14)','#e4c16d')]:
+                    f=go.Figure(go.Bar(x=d.date,y=d[series],marker_color=color) if series=='volume' else go.Scatter(x=d.date,y=d[series],line=dict(color=color)))
+                    f.update_layout(title=label,height=180,margin=dict(l=10,r=10,t=30,b=8),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',xaxis=dict(type='category',nticks=8))
+                    st.plotly_chart(f,use_container_width=True,config={'displayModeBar':False})
+                f=go.Figure()
+                f.add_trace(go.Scatter(x=d.date,y=d.macd,name='MACD',line=dict(color='#19c6a1')))
+                f.add_trace(go.Scatter(x=d.date,y=d.signal,name='Signal',line=dict(color='#f6c15e')))
+                f.update_layout(title='MACD',height=190,margin=dict(l=10,r=10,t=30,b=8),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',xaxis=dict(type='category',nticks=8))
+                st.plotly_chart(f,use_container_width=True,config={'displayModeBar':False})
 
 with market_tab:
     st.markdown('<div class="panel-label">▥ MARKET OVERVIEW / 市場概覽</div>',unsafe_allow_html=True)
@@ -138,7 +213,7 @@ with market_tab:
 with about:
     st.subheader('資料來源、限制與回測')
     st.info('歷史回測尚未開放：公開版不會在訪客操作時下載大量歷史資料，也不會顯示虛構的回測績效。')
-    st.markdown('**V5 是 V4 的介面升級**：沿用 GitHub Actions 更新與 data/snapshot.csv.gz 快照格式；不新增即時交易、下單或歷史 K 線資料。')
+    st.markdown('**V6 延續 V4/V5 的選股架構**：沿用 GitHub Actions 更新與 data/snapshot.csv.gz 快照格式；新增預先計算的歷史 K 線資料；不提供即時報價或下單。')
     st.markdown('技術指標來自歷史行情計算；投信買賣超目前僅涵蓋上市股票。官方盤後價格與供應商調整後價格可能不同。公開使用前請確認行情資料授權。')
     with st.expander('查看更新中繼資料'):
         st.json(meta)
