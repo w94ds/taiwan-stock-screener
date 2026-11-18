@@ -216,7 +216,8 @@ def candle_figure(rows,title,count=90,timeframe='日 K'):
     return fig
 
 def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_volume=True,
-                  show_rsi=True,show_macd=True,show_levels=False,show_ratio=True,expanded=False):
+                  show_rsi=True,show_macd=True,show_levels=False,show_ratio=True,expanded=False,
+                  level_mode='最新水平線'):
     d=compute_indicators(prepare_bars(rows,timeframe))
     d=d.tail(count).copy()
     panes=['K']+(['成交量'] if show_volume else [])+(['RSI'] if show_rsi else [])+(['MACD'] if show_macd else [])
@@ -232,22 +233,44 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
         if d[f'ma{n}'].notna().any():
             fig.add_trace(go.Scatter(x=x,y=d[f'ma{n}'],name=f'MA{n}',mode='lines',line=dict(color=colors[n],width=1.5)),row=1,col=1)
     if show_levels:
+        # Prior completed bars only. Use the latest non-null level for current reference lines.
+        level_info=[]
         for n,color in [(20,'#f1aa65'),(60,'#a28ff0')]:
             for field,dash in [('resistance','dash'),('support','dot')]:
                 col=f'{field}{n}'
-                if d[col].notna().any():
-                    fig.add_trace(go.Scatter(x=x,y=d[col],name=f'{n}日{"壓力" if field=="resistance" else "支撐"}',mode='lines',
-                        line=dict(color=color,width=1.4,dash=dash),opacity=.85,hovertemplate='%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>'),row=1,col=1)
-                    last=d[col].dropna().iloc[-1]
-                    fig.add_annotation(x=1.005,y=float(last),xref='paper',yref='y',text=f'{"R" if field=="resistance" else "S"}{n} {last:,.2f}',
-                        xanchor='left',showarrow=False,font=dict(color=color,size=10),bgcolor='#101a28',bordercolor=color,borderwidth=.5)
+                valid=d[col].dropna()
+                if valid.empty:
+                    continue
+                last=float(valid.iloc[-1])
+                label=f'{"R" if field=="resistance" else "S"}{n}'
+                if level_mode=='歷史動態線':
+                    fig.add_trace(go.Scatter(x=x,y=d[col],name=f'{label} 歷史',mode='lines',
+                        line=dict(color=color,width=1.3,dash=dash),opacity=.78,
+                        hovertemplate='%{x}<br>%{y:,.2f}<extra>%{fullData.name}</extra>'),row=1,col=1)
+                else:
+                    fig.add_hline(y=last,line_dash=dash,line_color=color,line_width=1.4,
+                                  opacity=.88,row=1,col=1)
+                level_info.append((label,last,color))
+        # Offset near-overlapping labels in pixel space, while anchoring the line itself to its exact price.
+        # xref=paper makes labels visible in the right-hand margin, even for S20 close to S60.
+        level_info.sort(key=lambda t:t[1])
+        offsets={}
+        for idx,(label,price,color) in enumerate(level_info):
+            offsets[label]=(-13 if idx%2==0 else 13) if any(
+                abs(price-other)<max(1,price*.012) for j,(_,other,_) in enumerate(level_info) if j!=idx
+            ) else 0
+        for label,price,color in level_info:
+            fig.add_annotation(x=1.005,y=price,xref='paper',yref='y',
+                text=f'{label} {price:,.2f}',xanchor='left',yanchor='middle',
+                yshift=offsets[label],showarrow=False,
+                font=dict(color=color,size=10),bgcolor='#101a28',bordercolor=color,borderwidth=.5)
 
     row=2
     if show_volume:
         fig.add_trace(go.Bar(x=x,y=d.volume,name='成交量',marker_color='#5b91bb'),row=row,col=1)
         if show_ratio and d.volume_ratio.notna().any():
             latest_ratio=d.volume_ratio.dropna().iloc[-1]
-            fig.add_annotation(text=f'最新量比 {latest_ratio:.2f}×',xref='paper',yref='paper',x=.99,y=.44,
+            fig.add_annotation(text=f'最新量比 {latest_ratio:.2f}×',xref='paper',yref='paper',x=.99,y=.96,
                                showarrow=False,font=dict(color='#f6c15e',size=11),bgcolor='#101a28')
         row+=1
     if show_rsi:
@@ -259,7 +282,7 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
         fig.add_trace(go.Bar(x=x,y=d.histogram,name='MACD 柱',marker_color='#5b91bb'),row=row,col=1)
         fig.add_trace(go.Scatter(x=x,y=d.dif,name='DIF',line=dict(color='#2bc7a2',width=1.4)),row=row,col=1)
         fig.add_trace(go.Scatter(x=x,y=d.signal,name='Signal',line=dict(color='#f6c15e',width=1.4)),row=row,col=1)
-    fig.update_layout(title=dict(text=title,font=dict(size=14)),height=950 if expanded else 790,
+    fig.update_layout(title=dict(text=title,font=dict(size=14)),height=(450 if expanded else 360)+max(0,len(panes)-1)*(175 if expanded else 145),
         margin=dict(l=12,r=112 if show_levels else 15,t=55,b=28),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',
         font=dict(color='#b8cadc',size=10),xaxis_rangeslider_visible=False,showlegend=True,
         legend=dict(orientation='h',y=1.03,x=0),dragmode='pan',hovermode='x unified',
@@ -269,7 +292,7 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
     return fig
 
 with charts:
-    if not st.session_state.get('v731_focus_mode',False):st.markdown('<div class="panel-label">▤ SWING TERMINAL / V7.3.1 波段交易工作台 · 非即時行情</div>',unsafe_allow_html=True)
+    if not st.session_state.get('v731_focus_mode',False):st.markdown('<div class="panel-label">▤ SWING TERMINAL / V7.3.2 波段交易工作台 · 非即時行情</div>',unsafe_allow_html=True)
     hpath=ROOT/'data'/'history.csv.gz'
     history=load_history(hpath.stat().st_mtime if hpath.exists() else 0)
     if history.empty:
@@ -312,6 +335,9 @@ with charts:
                 show_macd=flag_cols[2].checkbox('MACD',value=True,key='v73_macd')
                 show_levels=flag_cols[3].checkbox('支撐壓力',value=False,key='v73_levels')
                 show_ratio=flag_cols[4].checkbox('量比',value=True,key='v73_ratio')
+                level_mode=st.radio('支撐壓力顯示方式',['最新水平線','歷史動態線'],
+                    horizontal=True,key='v732_level_mode',disabled=not show_levels,
+                    help='最新水平線：顯示最新 R20/S20/R60/S60；歷史動態線：顯示逐日變化的階梯線。')
         if focus_mode:
             layout='放大分析'
         if search_symbol.strip():
@@ -353,7 +379,7 @@ with charts:
                             st.session_state.v7_focus=sym
                             st.rerun()
                 with left:
-                    st.plotly_chart(linked_figure(history.loc[history.symbol==focus],f'{focus} {names.get(focus,"")}',days,timeframe,ma_periods,show_volume,show_rsi,show_macd,show_levels,show_ratio,layout=='放大分析'),use_container_width=True,
+                    st.plotly_chart(linked_figure(history.loc[history.symbol==focus],f'{focus} {names.get(focus,"")}',days,timeframe,ma_periods,show_volume,show_rsi,show_macd,show_levels,show_ratio,layout=='放大分析' or focus_mode,level_mode),use_container_width=True,
                         config={'scrollZoom':True,'displayModeBar':True,'displaylogo':False,'doubleClick':'reset'},key=f'v73_linked_{focus}_{timeframe}_{layout}')
             else:
                 for start in range(0,len(selection),3):
