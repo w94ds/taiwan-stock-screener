@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
-st.set_page_config(page_title='TW Terminal V7.3.3 | 台股選股', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
+st.set_page_config(page_title='TW Terminal V7.3.4 | 台股選股', page_icon='📊', layout='wide', initial_sidebar_state='collapsed')
 st.markdown('''<style>
 :root {color-scheme:dark}
 html,body,[data-testid="stAppViewContainer"],.stApp {background:#080e17;color:#dce7f3}
@@ -55,7 +55,7 @@ meta_path=ROOT/'data'/'metadata.json'
 try: meta=json.loads(meta_path.read_text(encoding='utf-8')) if meta_path.exists() else {}
 except (ValueError,OSError): meta={}
 
-st.markdown('<div class="terminal-title">▥ TW TERMINAL <span class="tag">/ V7.3.3</span>　<span class="terminal-sub">台股全市場選股 · 專業交易工作台</span></div>',unsafe_allow_html=True)
+st.markdown('<div class="terminal-title">▥ TW TERMINAL <span class="tag">/ V7.3.4</span>　<span class="terminal-sub">台股全市場選股 · 專業交易工作台</span></div>',unsafe_allow_html=True)
 if df.empty:
     st.warning('目前沒有 data/snapshot.csv.gz。請先在 GitHub → Actions 執行 Update Taiwan stock snapshot，確認 data 資料夾產生後重新整理。')
     st.stop()
@@ -252,9 +252,34 @@ def zone_summary(bars, zones):
     if bars.empty:return []
     close=float(bars.close.iloc[-1]);result=[]
     for z in zones:
-        distance=(z['center']/close-1)*100 if close else np.nan
-        result.append({**z,'distance_pct':distance})
+        if z['lower']>close:
+            position='上方壓力候選';gap=(z['lower']/close-1)*100
+        elif z['upper']<close:
+            position='下方支撐候選';gap=(z['upper']/close-1)*100
+        else:
+            position='現價所在區間';gap=0.0
+        result.append({**z,'position':position,'distance_pct':gap})
     return result
+
+
+def history_quality_report(bars):
+    if bars.empty:return ['沒有可用的歷史行情'],None
+    d=bars.sort_values('date').copy();messages=[]
+    for col in ('open','high','low','close','volume'):
+        d[col]=pd.to_numeric(d[col],errors='coerce')
+    invalid=(d[['open','high','low','close']].isna().any(axis=1) |
+             (d[['open','high','low','close']]<=0).any(axis=1) |
+             (d.high<d[['open','close','low']].max(axis=1)) |
+             (d.low>d[['open','close','high']].min(axis=1)))
+    if invalid.any():messages.append(f'OHLC 不一致或缺值：{int(invalid.sum())} 根')
+    if (d.volume<0).any():messages.append('發現負成交量')
+    duplicate=int(d.date.duplicated().sum())
+    if duplicate:messages.append(f'重複交易日期：{duplicate} 筆')
+    spikes=int((d.close.pct_change(fill_method=None).abs()>.30).sum())
+    if spikes:messages.append(f'單日收盤變動超過 30%：{spikes} 筆，請確認公司行動或還原價格')
+    if pd.to_datetime(d.date,errors='coerce').isna().any():messages.append('存在無法解析的交易日期')
+    return messages,dict(first=str(d.date.iloc[0])[:10],last=str(d.date.iloc[-1])[:10],count=len(d))
+
 
 def candle_figure(rows,title,count=90,timeframe='日 K'):
     d=compute_indicators(prepare_bars(rows,timeframe)).tail(count)
@@ -322,19 +347,18 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
                 font=dict(color=color,size=10),bgcolor='#101a28',bordercolor=color,borderwidth=.5)
 
     if show_pivot_zones and zones and not d.empty:
-        last_close=float(d.close.iloc[-1])
-        # Nearest two zones of each type; prefer nearby confirmed multi-touch areas.
-        for kind,color in [('壓力','#e9a75c'),('支撐','#4bd1af')]:
-            candidates=sorted((z for z in zones if z['kind']==kind),
-                key=lambda z:(abs(z['center']-last_close),-z['touches']))[:2]
-            for idx,z in enumerate(candidates):
-                fig.add_hrect(y0=z['lower'],y1=z['upper'],fillcolor=color,opacity=.14,
-                              line_width=0,row=1,col=1)
-                pct=(z['center']/last_close-1)*100 if last_close else 0
-                fig.add_annotation(x=1.005,y=z['center'],xref='paper',yref='y',
-                    text=f"{kind}區 {z['lower']:,.1f}–{z['upper']:,.1f} ({pct:+.1f}%) ×{z['touches']}",
-                    xanchor='left',showarrow=False,font=dict(color=color,size=10),
-                    bgcolor='#101a28',bordercolor=color,borderwidth=.5,yshift=idx*12)
+        summarized=zone_summary(d,zones)
+        chosen=[]
+        for position in ('上方壓力候選','下方支撐候選','現價所在區間'):
+            matches=sorted((z for z in summarized if z['position']==position),
+                           key=lambda z:(abs(z['distance_pct']),-z['touches']))
+            chosen.extend(matches[:2])
+        for z in chosen:
+            color=('#e9a75c' if z['position']=='上方壓力候選'
+                   else '#4bd1af' if z['position']=='下方支撐候選'
+                   else '#a58bf0')
+            fig.add_hrect(y0=z['lower'],y1=z['upper'],fillcolor=color,opacity=.15,
+                          line_width=0,row=1,col=1)
 
     row=2
     if show_volume:
@@ -354,7 +378,7 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
         fig.add_trace(go.Scatter(x=x,y=d.dif,name='DIF',line=dict(color='#2bc7a2',width=1.4)),row=row,col=1)
         fig.add_trace(go.Scatter(x=x,y=d.signal,name='Signal',line=dict(color='#f6c15e',width=1.4)),row=row,col=1)
     fig.update_layout(title=dict(text=title,font=dict(size=14)),height=(450 if expanded else 360)+max(0,len(panes)-1)*(175 if expanded else 145),
-        margin=dict(l=12,r=205 if show_pivot_zones else (112 if show_levels else 15),t=55,b=28),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',
+        margin=dict(l=12,r=112 if show_levels else 25,t=55,b=28),template='plotly_dark',paper_bgcolor='#101a28',plot_bgcolor='#101a28',
         font=dict(color='#b8cadc',size=10),xaxis_rangeslider_visible=False,showlegend=True,
         legend=dict(orientation='h',y=1.03,x=0),dragmode='pan',hovermode='x unified',
         uirevision=f'{title}_{timeframe}_{count}_{expanded}')
@@ -363,7 +387,7 @@ def linked_figure(rows,title,count=90,timeframe='日 K',ma_periods=(20,),show_vo
     return fig
 
 with charts:
-    if not st.session_state.get('v731_focus_mode',False):st.markdown('<div class="panel-label">▤ SWING TERMINAL / V7.3.3 波段交易工作台 · 非即時行情</div>',unsafe_allow_html=True)
+    if not st.session_state.get('v731_focus_mode',False):st.markdown('<div class="panel-label">▤ SWING TERMINAL / V7.3.4 波段交易工作台 · 非即時行情</div>',unsafe_allow_html=True)
     hpath=ROOT/'data'/'history.csv.gz'
     history=load_history(hpath.stat().st_mtime if hpath.exists() else 0)
     if history.empty:
@@ -445,16 +469,21 @@ with charts:
                 computed=compute_indicators(full_bars)
                 zones=zone_summary(full_bars,swing_zones(full_bars))
                 if zones:
-                    current=float(full_bars.close.iloc[-1])
-                    above=sorted([z for z in zones if z['center']>=current],key=lambda z:z['center'])
-                    below=sorted([z for z in zones if z['center']<current],key=lambda z:-z['center'])
-                    ca,cb=st.columns(2)
-                    for column,group,label in [(ca,above,'上方轉折區'),(cb,below,'下方轉折區')]:
-                        if group:
-                            z=group[0]
-                            column.metric(label,f"{z['lower']:,.1f}–{z['upper']:,.1f}",f"{z['distance_pct']:+.2f}% / {z['touches']} 次轉折")
-                        else:column.metric(label,'尚無符合條件區間')
+                    st.markdown('**Pivot 波段區間（依現價重新分類）**')
+                    ordered=sorted(zones,key=lambda z:(abs(z['distance_pct']),-z['touches']))[:8]
+                    zone_table=pd.DataFrame([{
+                        '位置':z['position'],'來源':f"Pivot {z['kind']}",
+                        '價格下緣':round(z['lower'],2),'價格上緣':round(z['upper'],2),
+                        '距離最近邊界':f"{z['distance_pct']:+.2f}%",
+                        '確認轉折':z['touches']
+                    } for z in ordered])
+                    st.dataframe(zone_table,hide_index=True,use_container_width=True)
+                    st.caption('區間分類依上下緣與現價的位置；Pivot 高低點類型僅代表來源。詳細標籤移至表格，避免圖表重疊。')
                 else:st.caption('Pivot 區間：目前沒有至少兩次相近、且已確認的轉折點。')
+                quality,span=history_quality_report(full_bars)
+                if span:st.caption(f"行情資料：{span['first']} ～ {span['last']}｜{span['count']} 根{timeframe}｜尚未核對官方行情與還原價")
+                if quality:st.warning('行情檢查：'+'；'.join(quality))
+                else:st.caption('行情檢查：OHLC 基本一致性通過；不代表已與交易所官方行情核對。')
                 if not computed.empty:
                     last=computed.iloc[-1]
                     if pd.notna(last.resistance20) and pd.notna(last.volume_ratio):
