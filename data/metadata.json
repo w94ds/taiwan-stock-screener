@@ -1,7 +1,7 @@
 {
-  "updated_at_utc": "2026-11-18T17:48:42.468784+00:00",
-  "symbols_official": 1968,
-  "symbols_with_indicators": 1964,
+  "updated_at_utc": "2026-11-19T18:30:55.975298+00:00",
+  "symbols_official": 1974,
+  "symbols_with_indicators": 1970,
   "symbols_failed": 4,
   "failed_sample": [
     "7710",
@@ -9,7 +9,7 @@
     "3718",
     "7856"
   ],
-  "institution_day": "2026-11-18",
+  "institution_day": "2026-11-19",
   "sources": [
     "TWSE STOCK_DAY_ALL",
     "TPEx daily quotes",
